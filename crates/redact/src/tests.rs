@@ -940,3 +940,95 @@ fn redacting_every_inheriting_page_retires_the_parent_resources() {
         assert_eq!(under(&mut saved, page, &[[0.0, 190.0, 300.0, 220.0]]), 0);
     }
 }
+
+/// A white `/DCTDecode` image `w`×`h`, 8 bits RGB.
+fn jpeg_white(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let px = vec![255u8; (w as usize) * (h as usize) * 3];
+    ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90).encode(&px, w, h, ::image::ExtendedColorType::Rgb8).unwrap();
+    out
+}
+
+/// The page's one image, decoded: (width, height, RGB samples).
+fn page_image(doc: &Document, page: usize) -> Option<(u32, u32, Vec<u8>)> {
+    let p = pdfcraft_model::pages(doc).swap_remove(page);
+    let res = doc.resolve(p.dict.get(b"Resources")?).as_dict()?.clone();
+    let xo = doc.resolve(res.get(b"XObject")?).as_dict()?.clone();
+    for (_, v) in xo.iter() {
+        let Some(r) = v.as_ref() else { continue };
+        let Object::Stream(s) = &*doc.get(r) else { continue };
+        if s.dict.name(b"Subtype") != Some(b"Image") {
+            continue;
+        }
+        let img = ::image::load_from_memory(s.raw.as_ref()).ok()?;
+        let rgb = img.to_rgb8();
+        return Some((rgb.width(), rgb.height(), rgb.into_raw()));
+    }
+    None
+}
+
+/// Issue #2246. A scanned page — the output of a Brother printer/scanner, or of any OCR tool — is
+/// one full-page JPEG with an invisible OCR text layer on top. Redacting a small area used to drop
+/// the page's whole image (`/DCTDecode` was a codec the image path could not clear in place), so
+/// the page came back blank. Only the marked pixels may go: the scan stays, cleared where the mark
+/// is, and the OCR text under it dies with it.
+#[test]
+fn a_scanned_page_keeps_its_image_and_loses_the_text_under_the_mark() {
+    // A 300×300 page: a 40×40 white JPEG shown 100×100 at (10,10), and "OCR1234" (the OCR layer)
+    // from x = 10 at 10 pt, each glyph 5 pt wide. The mark (50,50)-(70,70) is the middle of the
+    // image — pixels 16–23 on both axes; the text mark covers R1234, x 20–40.
+    let img = stream(
+        "/Type /XObject /Subtype /Image /Width 40 /Height 40 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
+        &jpeg_white(40, 40),
+    );
+    let src = b"q 100 0 0 100 10 10 cm /Im1 Do Q BT /F1 10 Tf 10 200 Td (OCR1234) Tj ET";
+    let mut doc = one_page(src, "/XObject << /Im1 7 0 R >>", vec![img]);
+    assert_eq!(page_image(&doc, 0).map(|(w, h, _)| (w, h)), Some((40, 40)), "the scan is drawn to begin with");
+
+    mark(&mut doc, 0, &[[20.0, 195.0, 40.0, 210.0], [50.0, 50.0, 70.0, 70.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.images_cleared), (0, 1), "the one page image is cleared in place, never removed: {r:?}");
+    assert_eq!(r.glyphs, 4, "the OCR text under the mark dies with it");
+
+    // The page still draws an image, and the text under the mark is gone from the content stream.
+    let c = content(&doc, 0);
+    assert!(c.contains("PCRedacted"), "the page is still drawn: {c}");
+    assert!(!c.contains("0031") && !c.contains("0032") && !c.contains("0033"), "the marked glyphs' codes are gone: {c}");
+    assert!(c.contains("(OC)") && c.contains("(4)"), "the text past the mark stays: {c}");
+    assert_eq!(under(&mut doc, 0, &[[20.5, 195.0, 24.5, 210.0]]), 0);
+    assert_eq!(under(&mut doc, 0, &[[40.0, 195.0, 45.0, 210.0]]), 1, "'4', past the mark, is untouched");
+
+    // Pixels: still 40×40, white everywhere except the marked 8×8 block in the middle.
+    let (w, h, px) = page_image(&doc, 0).expect("the cleared image copy is there");
+    assert_eq!((w, h), (40, 40), "the scan keeps its size");
+    let at = |i: u32, j: u32| &px[((j * 40 + i) * 3) as usize..][..3];
+    for (i, j) in [(0, 0), (39, 0), (0, 39), (39, 39), (2, 20), (37, 20)] {
+        assert!(at(i, j).iter().all(|&b| b > 160), "the rest of the scan is still drawn at ({i},{j}): {:?}", at(i, j));
+    }
+    for (i, j) in [(16, 16), (20, 20), (23, 23), (18, 21)] {
+        assert!(at(i, j).iter().all(|&b| b < 96), "the marked pixels are black at ({i},{j}): {:?}", at(i, j));
+    }
+
+    // Saving and reopening keeps every bit of that.
+    let mut saved = reopen(&doc);
+    assert_eq!(page_image(&saved, 0).map(|(w, h, _)| (w, h)), Some((40, 40)));
+    assert_eq!(under(&mut saved, 0, &[[20.5, 195.0, 24.5, 210.0]]), 0);
+    assert!(!content(&saved, 0).contains("0031"));
+}
+
+/// An image whose codec PdfCraft cannot clear in place (a JBIG2 fax scan, say) still fails closed:
+/// the whole image goes, rather than the mark being quietly ignored.
+#[test]
+fn an_image_codec_that_cannot_be_cleared_in_place_is_still_removed() {
+    let fax = stream(
+        "/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode",
+        b"FAKESECRETFAX",
+    );
+    let mut doc = one_page(b"q 100 0 0 100 10 10 cm /Im2 Do Q", "/XObject << /Im2 7 0 R >>", vec![fax]);
+    mark(&mut doc, 0, &[[50.0, 50.0, 70.0, 70.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!(r.images_removed, 1, "the whole image goes: {r:?}");
+    let c = content(&doc, 0);
+    assert!(!c.contains("/Im2"), "its `Do` is dropped: {c}");
+    assert_no_secret(&doc, b"FAKESECRETFAX");
+}
