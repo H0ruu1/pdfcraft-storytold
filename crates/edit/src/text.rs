@@ -1759,6 +1759,12 @@ pub struct BlockStyle {
     /// For an invisible paragraph ([`TextBlock::invisible`]): fill its old area with this colour
     /// (RGB 0–1) before the new text, hiding the scanned word beneath it.
     pub cover: Option<[f64; 3]>,
+    /// The paragraph's text direction, as Word's Right-to-left / Left-to-right buttons set it:
+    /// `Some(true)` right to left, `Some(false)` left to right. It decides the bidirectional
+    /// order of each line (where numbers and punctuation go) and, without an alignment, aligns
+    /// the paragraph to that side. `None` takes it from the letters (more Hebrew or Arabic than
+    /// Latin reads right to left).
+    pub direction: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1870,7 +1876,7 @@ fn rewrite_block_from(
     }
     // Right-to-left text (more Hebrew or Arabic letters than Latin) is right-aligned unless an
     // alignment is asked for, and a single right-to-left line keeps its right edge as it grows.
-    let rtl = crate::bidi::rtl_base(&text);
+    let rtl = style.direction.unwrap_or_else(|| crate::bidi::rtl_base(&text));
     let anchored_right = rtl && style.width.is_none() && members.len() == 1;
     // A paragraph keeps its width (or takes the one asked for); a single line grows to the right
     // (to the left when right-to-left), up to the page's margin.
@@ -2019,7 +2025,7 @@ fn rewrite_block_from(
             tw_set = tw;
         }
         // Each wrapped line in typing order; drawn left to right (right-to-left runs reversed).
-        let visual = crate::bidi::to_visual(line);
+        let visual = crate::bidi::to_visual_dir(line, style.direction);
         // Stretched without word spacing: shown up to and including each space, then moved on.
         let pieces = if stretch > 0.0 { visual.split_inclusive(' ').collect() } else { vec![visual.as_str()] };
         for piece in pieces {

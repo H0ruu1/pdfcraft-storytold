@@ -524,6 +524,13 @@ pub struct PdfCraftApp {
     desktop_theme_enabled: bool,
     /// How far a mouse-wheel notch scrolls.
     pub scroll_speed: scroll_speed::ScrollSpeed,
+    /// Preferences ▸ Legacy text encoding: how Edit text reads old 8-bit fonts that don't say
+    /// which characters they draw (Hebrew code pages). The engine reads it process-wide, so every
+    /// frame hands it to `pdfcraft_fonts::set_legacy_encoding`.
+    pub legacy_encoding: pdfcraft_fonts::LegacyEncoding,
+    /// Preferences ▸ Show the formatting toolbar when editing text: the floating toolbar above
+    /// a paragraph being edited (`edit_text_ui::mini_toolbar`). On unless turned off.
+    pub text_toolbar: bool,
     /// Preferences ▸ Animation effects: on, off, or as the system's animation setting says.
     pub animation_effects: motion::AnimationEffects,
     /// Whether the system asked for no animations, and how the desktop app asks it.
@@ -898,6 +905,8 @@ impl PdfCraftApp {
             #[cfg(target_os = "linux")]
             desktop_theme_enabled: false,
             scroll_speed: scroll_speed::ScrollSpeed::default(),
+            legacy_encoding: pdfcraft_fonts::LegacyEncoding::default(),
+            text_toolbar: true,
             animation_effects: motion::AnimationEffects::default(),
             motion: motion::Motion::default(),
             language: i18n::AUTO.to_string(),
@@ -2208,6 +2217,8 @@ impl PdfCraftApp {
         });
         // Set apart: one more key inside the macro above passes serde_json's recursion limit.
         v["redact_prefs"] = self.redact_defaults.to_json();
+        v["legacy_encoding"] = self.legacy_encoding.name().into();
+        v["text_toolbar"] = self.text_toolbar.into();
         v.to_string()
     }
 
@@ -2252,6 +2263,13 @@ impl PdfCraftApp {
         }
         if let Ok(speed) = serde_json::from_value::<scroll_speed::ScrollSpeed>(v["scroll_speed"].clone()) {
             self.scroll_speed = speed;
+        }
+        // An unknown name (a newer or damaged settings file) leaves the choice as it was.
+        if let Some(encoding) = v["legacy_encoding"].as_str().and_then(pdfcraft_fonts::LegacyEncoding::parse) {
+            self.legacy_encoding = encoding;
+        }
+        if let Some(on) = v["text_toolbar"].as_bool() {
+            self.text_toolbar = on;
         }
         if let Ok(effects) = serde_json::from_value::<motion::AnimationEffects>(v["animation_effects"].clone()) {
             self.animation_effects = effects;
@@ -2396,6 +2414,17 @@ impl PdfCraftApp {
             }
             ("scroll_speed", _) => {
                 self.scroll_speed = scroll_speed::ScrollSpeed::parse(value).ok_or("scroll_speed must be slow, normal, or fast")?;
+            }
+            ("text_toolbar", _) => {
+                self.text_toolbar = match value.trim().to_ascii_lowercase().as_str() {
+                    "on" | "true" | "1" => true,
+                    "off" | "false" | "0" => false,
+                    _ => return Err("text_toolbar must be on or off".into()),
+                };
+            }
+            ("legacy_encoding", _) => {
+                self.legacy_encoding =
+                    pdfcraft_fonts::LegacyEncoding::parse(value).ok_or("legacy_encoding must be auto, declared, iso-8859-8, or windows-1255")?;
             }
             ("animation_effects", _) => {
                 self.animation_effects = motion::AnimationEffects::parse(value).ok_or("animation_effects must be system, on, or off")?;
@@ -2859,6 +2888,10 @@ impl eframe::App for PdfCraftApp {
         self.startup_superseded |= !self.views.is_empty() || self.combine_showing() || self.dialog.is_some() || self.password_prompt.is_some();
         // Also done in `raw_input_hook`, before input; here for hosts that don't call the hook.
         self.scroll_speed.set_line_speed(ctx);
+        // The engine decodes text with the process-wide choice; keep it in step with Preferences.
+        if pdfcraft_fonts::legacy_encoding() != self.legacy_encoding {
+            pdfcraft_fonts::set_legacy_encoding(self.legacy_encoding);
+        }
         // Before anything reads this frame's wheel input or draws, and with the line speed just set.
         self.motion.begin_pass(ctx, self.animation_effects);
         // Before taking this frame's drop: the grid must be drawn once with the pointer where
@@ -3043,6 +3076,9 @@ impl eframe::App for PdfCraftApp {
             }
         }
         let t = theme::Tokens::get(&ctx);
+        // The floating toolbar of a paragraph being edited. A foreground area, so it shows over
+        // the page; drawn first so the editor below knows this frame's toolbar clicks.
+        edit_text_ui::mini_toolbar(self, &ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.pasteboard)).show(ui, |ui| {
             if self.mode == Mode::Read {
                 match self.active {
