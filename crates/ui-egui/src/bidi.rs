@@ -20,13 +20,57 @@ use unicode_bidi::{BidiInfo, Level, ParagraphInfo};
 /// The base direction is left to right, as the interface is: a file name keeps its extension
 /// at the end, the way the window title shows it. Use it for painting only; accessibility
 /// labels and anything stored keep the logical text.
+///
+/// Each folder name of a path and the name's stem reads in its own direction (from its first
+/// strong character), as a file manager shows them: "דף קשר (1).docx" shows its words from the
+/// right with "(1)" at their left and ".docx" at the end. With one left-to-right base for the
+/// whole name, "(1)" was split around the Hebrew words ("1) ... ).docx").
 pub fn visual(text: &str) -> Cow<'_, str> {
     if !text.chars().any(is_rtl_script) {
         return Cow::Borrowed(text);
     }
     let mut out = String::with_capacity(text.len());
-    push_visual(&mut out, text, Level::ltr());
+    for (part, isolate) in path_parts(text) {
+        if isolate && part.chars().any(is_rtl_script) {
+            let rtl = part.chars().find_map(|c| match unicode_bidi::bidi_class(c) {
+                unicode_bidi::BidiClass::R | unicode_bidi::BidiClass::AL => Some(true),
+                unicode_bidi::BidiClass::L => Some(false),
+                _ => None,
+            });
+            push_visual(&mut out, part, if rtl == Some(true) { Level::rtl() } else { Level::ltr() });
+        } else {
+            out.extend(part.chars().filter(|c| !is_bidi_control(*c)));
+        }
+    }
     Cow::Owned(out)
+}
+
+/// `text` (a path or file name) as its parts in order, each marked when it reads in its own
+/// direction: folder names and the file's stem are, the separators and a short extension are not.
+fn path_parts(text: &str) -> Vec<(&str, bool)> {
+    let mut parts = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(['/', '\\']) {
+        if i > 0 {
+            parts.push((rest.get(..i).unwrap_or_default(), true));
+        }
+        parts.push((rest.get(i..i + 1).unwrap_or_default(), false));
+        rest = rest.get(i + 1..).unwrap_or_default();
+    }
+    // The extension: a dot and up to eight ASCII letters or digits at the end.
+    match rest.rfind('.') {
+        Some(dot)
+            if dot > 0
+                && rest.len() - dot <= 9
+                && rest.get(dot + 1..).is_some_and(|e| !e.is_empty() && e.chars().all(|c| c.is_ascii_alphanumeric())) =>
+        {
+            parts.push((rest.get(..dot).unwrap_or_default(), true));
+            parts.push((rest.get(dot..).unwrap_or_default(), false));
+        }
+        _ if !rest.is_empty() => parts.push((rest, true)),
+        _ => {}
+    }
+    parts
 }
 
 /// `text` in display order for the paragraph direction `base`, appended to `out`.
@@ -531,6 +575,17 @@ mod tests {
         // A number inside right-to-left text reads left to right, to the left of what precedes it.
         assert_eq!(visual("ملف 2024.pdf"), "2024 ملف.pdf");
         assert_eq!(visual(r"C:\Users\me\واحد اثنين\a.pdf"), r"C:\Users\me\اثنين واحد\a.pdf");
+    }
+
+    #[test]
+    fn a_copy_number_stays_with_its_hebrew_name() {
+        // The reported recent file: "(1)" reads at the left of the Hebrew words, the extension at
+        // the end, and the folders in order (egui gets each right-to-left stretch in logical
+        // order: see `push_for_shaper`).
+        assert_eq!(visual("דף קשר ב2 מעודכן (1).docx"), "(1) מעודכן 2ב קשר דף.docx");
+        assert_eq!(visual(r"F:\Downloads\דף קשר (1).docx"), r"F:\Downloads\(1) קשר דף.docx");
+        // A stem starting with a Latin word keeps the left-to-right base.
+        assert_eq!(visual("Report שלום עולם.pdf"), "Report עולם שלום.pdf");
     }
 
     #[test]
