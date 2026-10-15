@@ -2599,3 +2599,16 @@ key	Space	Space
 	Restore	Khôi phục
 	Use system title bar	Dùng thanh tiêu đề hệ thống
 	Show a basic title bar for the window buttons instead of the tab strip. GNOME doesn't draw title bars for apps, so this one doesn't follow its theme.	Hiện thanh tiêu đề đơn giản cho các nút cửa sổ thay vì dải tab. GNOME không vẽ thanh tiêu đề cho ứng dụng, nên thanh này không theo chủ đề của nó.
+	Show the formatting toolbar when editing text	Hiện thanh định dạng khi chỉnh sửa văn bản
+	Drag to move	Kéo để di chuyển
+	Smaller text	Chữ nhỏ hơn
+	Larger text	Chữ lớn hơn
+	Text direction	Hướng văn bản
+	Right-to-left text	Văn bản từ phải sang trái
+	Left-to-right text	Văn bản từ trái sang phải
+	Legacy text encoding	Bảng mã văn bản cũ
+	Auto-detect	Tự động phát hiện
+	As declared in the PDF	Theo khai báo trong PDF
+	Hebrew (ISO 8859-8)	Tiếng Do Thái (ISO 8859-8)
+	Hebrew (Windows-1255)	Tiếng Do Thái (Windows-1255)
+	How Edit text reads old fonts that don't say which letters they draw. Auto-detect recognises Hebrew fonts laid out for ISO 8859-8 or Windows-1255.	Cách Chỉnh sửa văn bản đọc các phông chữ cũ không cho biết chúng vẽ chữ cái nào. Tự động phát hiện nhận ra các phông chữ tiếng Do Thái theo bảng mã ISO 8859-8 hoặc Windows-1255.
